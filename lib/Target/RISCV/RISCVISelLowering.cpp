@@ -106,7 +106,7 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SMUL_LOHI, XLenVT, Expand);
   setOperationAction(ISD::UMUL_LOHI, XLenVT, Expand);
 
-  setOperationAction(ISD::SHL_PARTS, XLenVT, Expand);
+  setOperationAction(ISD::SHL_PARTS, XLenVT, Custom);
   setOperationAction(ISD::SRL_PARTS, XLenVT, Expand);
   setOperationAction(ISD::SRA_PARTS, XLenVT, Expand);
 
@@ -341,6 +341,8 @@ SDValue RISCVTargetLowering::LowerOperation(SDValue Op,
     return lowerFRAMEADDR(Op, DAG);
   case ISD::RETURNADDR:
     return lowerRETURNADDR(Op, DAG);
+  case ISD::SHL_PARTS:
+      return lowerSHL_PARTS(Op, DAG);
   case ISD::BITCAST: {
     assert(Subtarget.is64Bit() && Subtarget.hasStdExtF() &&
            "Unexpected custom legalisation");
@@ -529,6 +531,55 @@ SDValue RISCVTargetLowering::lowerRETURNADDR(SDValue Op,
   // live-in.
   unsigned Reg = MF.addLiveIn(RI.getRARegister(), getRegClassFor(XLenVT));
   return DAG.getCopyFromReg(DAG.getEntryNode(), DL, Reg, XLenVT);
+}
+
+SDValue RISCVTargetLowering::lowerSHL_PARTS(SDValue Op,
+                                            SelectionDAG &DAG) const {
+  SDLoc DL(Op);
+  SDValue Lo = Op.getOperand(0);
+  SDValue Hi = Op.getOperand(1);
+  SDValue Shamt = Op.getOperand(2);
+  EVT VT = Lo.getValueType();
+  unsigned PartSize = VT.getSizeInBits();
+
+  // if Shamt < XLEN:
+  //   Lo = Lo << Shamt
+  //   Hi = (Hi << Shamt) | ((Lo >> 1) >> (XLEN-1 - Shamt))
+  // else:
+  //   Lo = 0
+  //   Hi = Lo << Shamt
+
+  SDValue ShamtLo = DAG.getNode(ISD::SUB, DL, VT,
+                                DAG.getConstant(PartSize-1, DL, VT), Shamt);
+  SDValue ShiftRight1Lo = DAG.getNode(ISD::SRL, DL, VT, Lo,
+                                      DAG.getConstant(1, DL, VT));
+  SDValue ShiftRightLo = DAG.getNode(ISD::SRL, DL, VT, ShiftRight1Lo, ShamtLo);
+
+  SDValue ShiftLeftHi = DAG.getNode(ISD::SHL, DL, VT, Hi, Shamt);
+  SDValue Or = DAG.getNode(ISD::OR, DL, VT, ShiftLeftHi, ShiftRightLo);
+
+  SDValue ShiftLeftLo = DAG.getNode(ISD::SHL, DL, VT, Lo, Shamt);
+
+  SDValue W = DAG.getConstant(PartSize, DL, MVT::i32);
+  SDValue CC = DAG.getSetCC(DL, VT, Shamt, W, ISD::SETLT);
+
+#if 1
+  Lo = DAG.getNode(ISD::SELECT, DL, VT, CC, ShiftLeftLo,
+                   DAG.getConstant(0, DL, VT));
+  Hi = DAG.getNode(ISD::SELECT, DL, VT, CC, Or, ShiftLeftLo);
+  
+  SDValue Parts[2] = {Lo, Hi};
+  return DAG.getMergeValues(Parts, DL);
+#else
+  SDValue LessParts[2] = {ShiftLeftLo, Or};
+  SDValue Less = DAG.getMergeValues(LessParts, DL);
+
+  SDValue MoreParts[2] = {DAG.getConstant(0, DL, VT), ShiftLeftLo};
+  SDValue More = DAG.getMergeValues(MoreParts, DL);
+
+  EVT SVT = 0 ? VT : Less.getValueType(); // neither works
+  return DAG.getNode(ISD::SELECT, DL, SVT, CC, Less, More);
+#endif
 }
 
 // Returns the opcode of the target-specific SDNode that implements the 32-bit
