@@ -1515,6 +1515,7 @@ void DAGTypeLegalizer::ExpandIntegerResult(SDNode *N, unsigned ResNo) {
   /**/
   case ISD::SELECT:
   {
+      errs() << "SELECT -> SELECT_PARTS lowering\n";
       SDLoc DL(N);
       SDValue Cond = GetPromotedInteger(N->getOperand(0));
       SDValue In1L, In1H;
