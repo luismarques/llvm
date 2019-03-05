@@ -1511,7 +1511,23 @@ void DAGTypeLegalizer::ExpandIntegerResult(SDNode *N, unsigned ResNo) {
                        "operator!");
 
   case ISD::MERGE_VALUES: SplitRes_MERGE_VALUES(N, ResNo, Lo, Hi); break;
-  case ISD::SELECT:       SplitRes_SELECT(N, Lo, Hi); break;
+  //case ISD::SELECT:       SplitRes_SELECT(N, Lo, Hi); break;/*
+  /**/
+  case ISD::SELECT:
+  {
+      SDLoc DL(N);
+      SDValue Cond = GetPromotedInteger(N->getOperand(0));
+      SDValue In1L, In1H;
+      GetExpandedInteger(N->getOperand(1), In1L, In1H);
+      SDValue In2L, In2H;
+      GetExpandedInteger(N->getOperand(2), In2L, In2H);
+      EVT NVT = In1L.getValueType();
+      EVT VT = N->getOperand(1).getValueType();
+      SDValue Ops[] = { Cond, In1L, In1H, In2L, In2H };
+      Lo = DAG.getNode(ISD::SELECT_PARTS, DL, DAG.getVTList(NVT, NVT), Ops);
+      Hi = Lo.getValue(1);
+      break;
+  }/**/
   case ISD::SELECT_CC:    SplitRes_SELECT_CC(N, Lo, Hi); break;
   case ISD::UNDEF:        SplitRes_UNDEF(N, Lo, Hi); break;
 

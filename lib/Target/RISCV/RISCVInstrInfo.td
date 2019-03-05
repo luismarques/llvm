@@ -25,6 +25,7 @@ def SDT_RISCVCall     : SDTypeProfile<0, -1, [SDTCisVT<0, XLenVT>]>;
 def SDT_RISCVSelectCC : SDTypeProfile<1, 5, [SDTCisSameAs<1, 2>,
                                              SDTCisSameAs<0, 4>,
                                              SDTCisSameAs<4, 5>]>;
+def SDT_RISCVSelectCCParts : SDTypeProfile<2, 7, []>;
 
 // Target-independent nodes, but with target-specific formats.
 def callseq_start : SDNode<"ISD::CALLSEQ_START", SDT_CallSeqStart,
@@ -45,6 +46,8 @@ def riscv_sret_flag : SDNode<"RISCVISD::SRET_FLAG", SDTNone,
 def riscv_mret_flag : SDNode<"RISCVISD::MRET_FLAG", SDTNone,
                              [SDNPHasChain, SDNPOptInGlue]>;
 def riscv_selectcc  : SDNode<"RISCVISD::SELECT_CC", SDT_RISCVSelectCC,
+                             [SDNPInGlue]>;
+def riscv_selectcc_parts  : SDNode<"RISCVISD::SELECT_CC_PARTS", SDT_RISCVSelectCCParts,
                              [SDNPInGlue]>;
 def riscv_tail      : SDNode<"RISCVISD::TAIL", SDT_RISCVCall,
                              [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
@@ -789,6 +792,14 @@ class SelectCC_rrirr<RegisterClass valty, RegisterClass cmpty>
               (XLenVT imm:$imm), valty:$truev, valty:$falsev))]>;
 
 def Select_GPR_Using_CC_GPR : SelectCC_rrirr<GPR, GPR>;
+
+let usesCustomInserter = 1, hasSideEffects = 1, mayStore = 0, mayLoad = 0 in
+def Select_CC_Parts
+    : Pseudo<(outs GPR:$dstlo, GPR:$dsthi),
+             (ins GPR:$lhs, GPR:$rhs, ixlenimm:$imm,
+              GPR:$truevlo, GPR:$truevhi, GPR:$falsevlo, GPR:$falsevhi),
+             [(set GPR:$dstlo, GPR:$dsthi, (riscv_selectcc_parts GPR:$lhs, GPR:$rhs,
+              (XLenVT imm:$imm), GPR:$truevlo, GPR:$truevhi, GPR:$falsevlo, GPR:$falsevhi))]>;
 
 /// Branches and jumps
 

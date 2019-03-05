@@ -29,6 +29,7 @@ enum NodeType : unsigned {
   MRET_FLAG,
   CALL,
   SELECT_CC,
+  SELECT_CC_PARTS,
   BuildPairF64,
   SplitF64,
   TAIL,
@@ -137,6 +138,7 @@ private:
   SDValue lowerBlockAddress(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerConstantPool(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerSELECT(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerSELECT_PARTS(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerVASTART(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFRAMEADDR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;

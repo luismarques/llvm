@@ -68,6 +68,8 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SELECT, XLenVT, Custom);
   setOperationAction(ISD::SELECT_CC, XLenVT, Expand);
 
+  setOperationAction(ISD::SELECT_PARTS, XLenVT, Custom);
+
   setOperationAction(ISD::STACKSAVE, MVT::Other, Expand);
   setOperationAction(ISD::STACKRESTORE, MVT::Other, Expand);
 
@@ -335,6 +337,8 @@ SDValue RISCVTargetLowering::LowerOperation(SDValue Op,
     return lowerConstantPool(Op, DAG);
   case ISD::SELECT:
     return lowerSELECT(Op, DAG);
+  case ISD::SELECT_PARTS:
+    return lowerSELECT_PARTS(Op, DAG);
   case ISD::VASTART:
     return lowerVASTART(Op, DAG);
   case ISD::FRAMEADDR:
@@ -461,6 +465,29 @@ SDValue RISCVTargetLowering::lowerSELECT(SDValue Op, SelectionDAG &DAG) const {
   SDValue Ops[] = {CondV, Zero, SetNE, TrueV, FalseV};
 
   return DAG.getNode(RISCVISD::SELECT_CC, DL, VTs, Ops);
+}
+
+SDValue RISCVTargetLowering::lowerSELECT_PARTS(SDValue Op, SelectionDAG &DAG) const {
+  SDValue CondV = Op.getOperand(0);
+  SDValue TrueVLo = Op.getOperand(1);
+  SDValue TrueVHi = Op.getOperand(2);
+  SDValue FalseVLo = Op.getOperand(3);
+  SDValue FalseVHi = Op.getOperand(4);
+
+  SDLoc DL(Op);
+  MVT XLenVT = Subtarget.getXLenVT();
+
+  SDVTList VTs = DAG.getVTList(Op.getValueType(), Op.getValueType(), MVT::Glue);
+  SDValue LHS = CondV.getOperand(0);
+  SDValue RHS = CondV.getOperand(1);
+  auto CC = cast<CondCodeSDNode>(CondV.getOperand(2));
+  ISD::CondCode CCVal = CC->get();
+
+  normaliseSetCC(LHS, RHS, CCVal);
+
+  SDValue TargetCC = DAG.getConstant(CCVal, DL, XLenVT);
+  SDValue Ops[] = {LHS, RHS, TargetCC, TrueVLo, TrueVHi, FalseVLo, FalseVHi};
+  return DAG.getNode(RISCVISD::SELECT_CC_PARTS, DL, VTs, Ops);
 }
 
 SDValue RISCVTargetLowering::lowerVASTART(SDValue Op, SelectionDAG &DAG) const {
@@ -784,18 +811,23 @@ static MachineBasicBlock *emitBuildPairF64Pseudo(MachineInstr &MI,
 MachineBasicBlock *
 RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
                                                  MachineBasicBlock *BB) const {
-  switch (MI.getOpcode()) {
+  auto Op = MI.getOpcode();
+
+  switch (Op) {
   default:
     llvm_unreachable("Unexpected instr type to insert");
   case RISCV::Select_GPR_Using_CC_GPR:
   case RISCV::Select_FPR32_Using_CC_GPR:
   case RISCV::Select_FPR64_Using_CC_GPR:
+  case RISCV::Select_CC_Parts:
     break;
   case RISCV::BuildPairF64Pseudo:
     return emitBuildPairF64Pseudo(MI, BB);
   case RISCV::SplitF64Pseudo:
     return emitSplitF64Pseudo(MI, BB);
   }
+
+  bool IsParts = Op == RISCV::Select_CC_Parts;
 
   // To "insert" a SELECT instruction, we actually have to insert the triangle
   // control-flow pattern.  The incoming instruction knows the destination vreg
@@ -830,10 +862,11 @@ RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   HeadMBB->addSuccessor(IfFalseMBB);
   HeadMBB->addSuccessor(TailMBB);
 
+  //SDValue Ops[] = {LHS, RHS, TargetCC, TrueVLo, TrueVHi, FalseVLo, FalseVHi};
   // Insert appropriate branch.
-  unsigned LHS = MI.getOperand(1).getReg();
-  unsigned RHS = MI.getOperand(2).getReg();
-  auto CC = static_cast<ISD::CondCode>(MI.getOperand(3).getImm());
+  unsigned LHS = MI.getOperand(1+IsParts).getReg();
+  unsigned RHS = MI.getOperand(2+IsParts).getReg();
+  auto CC = static_cast<ISD::CondCode>(MI.getOperand(3+IsParts).getImm());
   unsigned Opcode = getBranchOpcodeForIntCondCode(CC);
 
   BuildMI(HeadMBB, DL, TII.get(Opcode))
@@ -844,13 +877,35 @@ RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   // IfFalseMBB just falls through to TailMBB.
   IfFalseMBB->addSuccessor(TailMBB);
 
-  // %Result = phi [ %TrueValue, HeadMBB ], [ %FalseValue, IfFalseMBB ]
-  BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
-          MI.getOperand(0).getReg())
-      .addReg(MI.getOperand(4).getReg())
-      .addMBB(HeadMBB)
-      .addReg(MI.getOperand(5).getReg())
-      .addMBB(IfFalseMBB);
+  if (IsParts)
+  {
+    // TODO: need to either combine into a single value or assign to a different PHY node/part?
+
+    // %Result = phi [ %TrueValue, HeadMBB ], [ %FalseValue, IfFalseMBB ]
+    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
+            MI.getOperand(0).getReg())
+        .addReg(MI.getOperand(5).getReg())
+        .addMBB(HeadMBB)
+        .addReg(MI.getOperand(7).getReg())
+        .addMBB(IfFalseMBB);
+
+    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
+            MI.getOperand(1).getReg())
+        .addReg(MI.getOperand(6).getReg())
+        .addMBB(HeadMBB)
+        .addReg(MI.getOperand(8).getReg())
+        .addMBB(IfFalseMBB);
+  }
+  else
+  {
+    // %Result = phi [ %TrueValue, HeadMBB ], [ %FalseValue, IfFalseMBB ]
+    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
+            MI.getOperand(0).getReg())
+        .addReg(MI.getOperand(4).getReg())
+        .addMBB(HeadMBB)
+        .addReg(MI.getOperand(5).getReg())
+        .addMBB(IfFalseMBB);
+  }
 
   MI.eraseFromParent(); // The pseudo instruction is gone now.
   return TailMBB;
@@ -1812,6 +1867,8 @@ const char *RISCVTargetLowering::getTargetNodeName(unsigned Opcode) const {
     return "RISCVISD::CALL";
   case RISCVISD::SELECT_CC:
     return "RISCVISD::SELECT_CC";
+  case RISCVISD::SELECT_CC_PARTS:
+    return "RISCVISD::SELECT_CC_PARTS";
   case RISCVISD::BuildPairF64:
     return "RISCVISD::BuildPairF64";
   case RISCVISD::SplitF64:
