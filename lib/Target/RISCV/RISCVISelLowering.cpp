@@ -68,6 +68,8 @@ RISCVTargetLowering::RISCVTargetLowering(const TargetMachine &TM,
   setOperationAction(ISD::SELECT, XLenVT, Custom);
   setOperationAction(ISD::SELECT_CC, XLenVT, Expand);
 
+  setOperationAction(ISD::SELECT_PARTS, XLenVT, Custom);
+
   setOperationAction(ISD::STACKSAVE, MVT::Other, Expand);
   setOperationAction(ISD::STACKRESTORE, MVT::Other, Expand);
 
@@ -335,6 +337,8 @@ SDValue RISCVTargetLowering::LowerOperation(SDValue Op,
     return lowerConstantPool(Op, DAG);
   case ISD::SELECT:
     return lowerSELECT(Op, DAG);
+  case ISD::SELECT_PARTS:
+    return lowerSELECT_PARTS(Op, DAG);
   case ISD::VASTART:
     return lowerVASTART(Op, DAG);
   case ISD::FRAMEADDR:
@@ -430,37 +434,40 @@ SDValue RISCVTargetLowering::lowerSELECT(SDValue Op, SelectionDAG &DAG) const {
   SDLoc DL(Op);
   MVT XLenVT = Subtarget.getXLenVT();
 
-  // If the result type is XLenVT and CondV is the output of a SETCC node
-  // which also operated on XLenVT inputs, then merge the SETCC node into the
-  // lowered RISCVISD::SELECT_CC to take advantage of the integer
-  // compare+branch instructions. i.e.:
-  // (select (setcc lhs, rhs, cc), truev, falsev)
-  // -> (riscvisd::select_cc lhs, rhs, cc, truev, falsev)
-  if (Op.getSimpleValueType() == XLenVT && CondV.getOpcode() == ISD::SETCC &&
-      CondV.getOperand(0).getSimpleValueType() == XLenVT) {
-    SDValue LHS = CondV.getOperand(0);
-    SDValue RHS = CondV.getOperand(1);
-    auto CC = cast<CondCodeSDNode>(CondV.getOperand(2));
-    ISD::CondCode CCVal = CC->get();
-
-    normaliseSetCC(LHS, RHS, CCVal);
-
-    SDValue TargetCC = DAG.getConstant(CCVal, DL, XLenVT);
-    SDVTList VTs = DAG.getVTList(Op.getValueType(), MVT::Glue);
-    SDValue Ops[] = {LHS, RHS, TargetCC, TrueV, FalseV};
-    return DAG.getNode(RISCVISD::SELECT_CC, DL, VTs, Ops);
-  }
-
-  // Otherwise:
+  // Lower as follows, unless optimizeSelectCC is able to optimize
   // (select condv, truev, falsev)
   // -> (riscvisd::select_cc condv, zero, setne, truev, falsev)
   SDValue Zero = DAG.getConstant(0, DL, XLenVT);
   SDValue SetNE = DAG.getConstant(ISD::SETNE, DL, XLenVT);
-
+  optimizeSelectCC(Op, CondV, Zero, SetNE, DAG);
   SDVTList VTs = DAG.getVTList(Op.getValueType(), MVT::Glue);
   SDValue Ops[] = {CondV, Zero, SetNE, TrueV, FalseV};
 
   return DAG.getNode(RISCVISD::SELECT_CC, DL, VTs, Ops);
+}
+
+SDValue RISCVTargetLowering::lowerSELECT_PARTS(SDValue Op,
+                                               SelectionDAG &DAG) const {
+  SDValue CondV = Op.getOperand(0);
+  SDValue TrueVLo = Op.getOperand(1);
+  SDValue TrueVHi = Op.getOperand(2);
+  SDValue FalseVLo = Op.getOperand(3);
+  SDValue FalseVHi = Op.getOperand(4);
+
+  SDLoc DL(Op);
+  MVT XLenVT = Subtarget.getXLenVT();
+  EVT VT = Op.getValueType();
+  SDVTList VTs = DAG.getVTList(VT, VT, MVT::Glue);
+
+  // Lower as follows, unless optimizeSelectCC is able to optimize
+  // (select_parts condv, tvlo, tvhi, fvlo, fvhi)
+  // -> (riscvisd::select_cc_parts condv, zero, setne, tvlo, tvhi, fvlo, fvhi)
+  SDValue Zero = DAG.getConstant(0, DL, XLenVT);
+  SDValue SetNE = DAG.getConstant(ISD::SETNE, DL, XLenVT);
+  optimizeSelectCC(Op, CondV, Zero, SetNE, DAG);
+  SDValue Ops[] = {CondV, Zero, SetNE, TrueVLo, TrueVHi, FalseVLo, FalseVHi};
+
+  return DAG.getNode(RISCVISD::SELECT_CC_PARTS, DL, VTs, Ops);
 }
 
 SDValue RISCVTargetLowering::lowerVASTART(SDValue Op, SelectionDAG &DAG) const {
@@ -784,10 +791,13 @@ static MachineBasicBlock *emitBuildPairF64Pseudo(MachineInstr &MI,
 MachineBasicBlock *
 RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
                                                  MachineBasicBlock *BB) const {
-  switch (MI.getOpcode()) {
+  unsigned Op = MI.getOpcode();
+
+  switch (Op) {
   default:
     llvm_unreachable("Unexpected instr type to insert");
   case RISCV::Select_GPR_Using_CC_GPR:
+  case RISCV::Select_GPR_Parts_using_CC_GPR:
   case RISCV::Select_FPR32_Using_CC_GPR:
   case RISCV::Select_FPR64_Using_CC_GPR:
     break;
@@ -796,6 +806,8 @@ RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   case RISCV::SplitF64Pseudo:
     return emitSplitF64Pseudo(MI, BB);
   }
+
+  bool IsParts = Op == RISCV::Select_GPR_Parts_using_CC_GPR;
 
   // To "insert" a SELECT instruction, we actually have to insert the triangle
   // control-flow pattern.  The incoming instruction knows the destination vreg
@@ -830,10 +842,11 @@ RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   HeadMBB->addSuccessor(IfFalseMBB);
   HeadMBB->addSuccessor(TailMBB);
 
-  // Insert appropriate branch.
-  unsigned LHS = MI.getOperand(1).getReg();
-  unsigned RHS = MI.getOperand(2).getReg();
-  auto CC = static_cast<ISD::CondCode>(MI.getOperand(3).getImm());
+  // Insert appropriate branch. The +IsParts accounts for the extra return
+  // value for Select_GPR_Parts_using_CC_GPR.
+  unsigned LHS = MI.getOperand(1+IsParts).getReg();
+  unsigned RHS = MI.getOperand(2+IsParts).getReg();
+  auto CC = static_cast<ISD::CondCode>(MI.getOperand(3+IsParts).getImm());
   unsigned Opcode = getBranchOpcodeForIntCondCode(CC);
 
   BuildMI(HeadMBB, DL, TII.get(Opcode))
@@ -844,13 +857,34 @@ RISCVTargetLowering::EmitInstrWithCustomInserter(MachineInstr &MI,
   // IfFalseMBB just falls through to TailMBB.
   IfFalseMBB->addSuccessor(TailMBB);
 
-  // %Result = phi [ %TrueValue, HeadMBB ], [ %FalseValue, IfFalseMBB ]
-  BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
-          MI.getOperand(0).getReg())
-      .addReg(MI.getOperand(4).getReg())
-      .addMBB(HeadMBB)
-      .addReg(MI.getOperand(5).getReg())
-      .addMBB(IfFalseMBB);
+  if (IsParts)
+  {
+    // %ResultLo = phi [ %TrueValueLo, HeadMBB ], [ %FalseValueLo, IfFalseMBB ]
+    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
+            MI.getOperand(0).getReg())
+        .addReg(MI.getOperand(5).getReg())
+        .addMBB(HeadMBB)
+        .addReg(MI.getOperand(7).getReg())
+        .addMBB(IfFalseMBB);
+
+    // %ResultHi = phi [ %TrueValueHi, HeadMBB ], [ %FalseValueHi, IfFalseMBB ]
+    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
+            MI.getOperand(1).getReg())
+        .addReg(MI.getOperand(6).getReg())
+        .addMBB(HeadMBB)
+        .addReg(MI.getOperand(8).getReg())
+        .addMBB(IfFalseMBB);
+  }
+  else
+  {
+    // %Result = phi [ %TrueValue, HeadMBB ], [ %FalseValue, IfFalseMBB ]
+    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
+            MI.getOperand(0).getReg())
+        .addReg(MI.getOperand(4).getReg())
+        .addMBB(HeadMBB)
+        .addReg(MI.getOperand(5).getReg())
+        .addMBB(IfFalseMBB);
+  }
 
   MI.eraseFromParent(); // The pseudo instruction is gone now.
   return TailMBB;
@@ -1367,6 +1401,33 @@ SDValue RISCVTargetLowering::LowerFormalArguments(
   return Chain;
 }
 
+void RISCVTargetLowering::optimizeSelectCC(SDValue Op, SDValue &LHS,
+                                           SDValue &RHS, SDValue &CC,
+                                           SelectionDAG &DAG) const {
+  // If the result type is XLenVT and CondV is the output of a SETCC node which
+  // also operated on XLenVT inputs, then merge the SETCC node into the lowered
+  // node to take advantage of the integer compare+branch instructions. i.e.:
+  // (select[_parts] (setcc lhs, rhs, cc), ...)
+  // -> (riscvisd::select_cc[_parts] lhs, rhs, cc, ...)
+
+  SDValue CondV = Op.getOperand(0);
+  MVT XLenVT = Subtarget.getXLenVT();
+
+  if (Op.getSimpleValueType() != XLenVT || CondV.getOpcode() != ISD::SETCC ||
+      CondV.getOperand(0).getSimpleValueType() != XLenVT)
+    return;
+
+  LHS = CondV.getOperand(0);
+  RHS = CondV.getOperand(1);
+  auto OptCC = cast<CondCodeSDNode>(CondV.getOperand(2));
+  ISD::CondCode CCVal = OptCC->get();
+
+  normaliseSetCC(LHS, RHS, CCVal);
+  
+  SDLoc DL(Op);
+  CC = DAG.getConstant(CCVal, DL, XLenVT);
+}
+
 /// isEligibleForTailCallOptimization - Check whether the call is eligible
 /// for tail call optimization.
 /// Note: This is modelled after ARM's IsEligibleForTailCallOptimization.
@@ -1812,6 +1873,8 @@ const char *RISCVTargetLowering::getTargetNodeName(unsigned Opcode) const {
     return "RISCVISD::CALL";
   case RISCVISD::SELECT_CC:
     return "RISCVISD::SELECT_CC";
+  case RISCVISD::SELECT_CC_PARTS:
+    return "RISCVISD::SELECT_CC_PARTS";
   case RISCVISD::BuildPairF64:
     return "RISCVISD::BuildPairF64";
   case RISCVISD::SplitF64:

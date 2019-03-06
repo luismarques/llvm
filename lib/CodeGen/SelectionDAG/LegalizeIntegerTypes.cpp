@@ -1511,7 +1511,6 @@ void DAGTypeLegalizer::ExpandIntegerResult(SDNode *N, unsigned ResNo) {
                        "operator!");
 
   case ISD::MERGE_VALUES: SplitRes_MERGE_VALUES(N, ResNo, Lo, Hi); break;
-  case ISD::SELECT:       SplitRes_SELECT(N, Lo, Hi); break;
   case ISD::SELECT_CC:    SplitRes_SELECT_CC(N, Lo, Hi); break;
   case ISD::UNDEF:        SplitRes_UNDEF(N, Lo, Hi); break;
 
@@ -1521,6 +1520,7 @@ void DAGTypeLegalizer::ExpandIntegerResult(SDNode *N, unsigned ResNo) {
   case ISD::EXTRACT_VECTOR_ELT: ExpandRes_EXTRACT_VECTOR_ELT(N, Lo, Hi); break;
   case ISD::VAARG:              ExpandRes_VAARG(N, Lo, Hi); break;
 
+  case ISD::SELECT:      ExpandIntRes_SELECT(N, Lo, Hi); break;
   case ISD::ANY_EXTEND:  ExpandIntRes_ANY_EXTEND(N, Lo, Hi); break;
   case ISD::AssertSext:  ExpandIntRes_AssertSext(N, Lo, Hi); break;
   case ISD::AssertZext:  ExpandIntRes_AssertZext(N, Lo, Hi); break;
@@ -1909,6 +1909,34 @@ static std::pair<ISD::CondCode, ISD::NodeType> getExpandedMinMaxOps(int Op) {
     case ISD::UMIN:
       return std::make_pair(ISD::SETULT, ISD::UMIN);
   }
+}
+
+void DAGTypeLegalizer::ExpandIntRes_SELECT(SDNode *N,
+                                           SDValue &Lo, SDValue &Hi) {
+  EVT VT = N->getOperand(1).getValueType();
+  EVT NVT = TLI.getTypeToTransformTo(*DAG.getContext(), VT);
+  TargetLowering::LegalizeAction Action = TLI.getOperationAction(
+    ISD::SELECT_PARTS, NVT);
+
+  // If the target has a custom lowering for SELECT_PARTS (which should
+  // generate better code than two SELECTs) then we emit that. Otherwise
+  // we just split the SELECT.
+  const bool SupportsSelectParts = Action == TargetLowering::Custom;
+
+  if (!SupportsSelectParts) {
+    SplitRes_SELECT(N, Lo, Hi);
+    return;
+  }
+
+  SDLoc DL(N);
+  SDValue Cond = GetPromotedInteger(N->getOperand(0));
+  SDValue TrueL, TrueH;
+  GetExpandedInteger(N->getOperand(1), TrueL, TrueH);
+  SDValue FalseL, FalseH;
+  GetExpandedInteger(N->getOperand(2), FalseL, FalseH);
+  SDValue Ops[] = { Cond, TrueL, TrueH, FalseL, FalseH };
+  Lo = DAG.getNode(ISD::SELECT_PARTS, DL, DAG.getVTList(NVT, NVT), Ops);
+  Hi = Lo.getValue(1);
 }
 
 void DAGTypeLegalizer::ExpandIntRes_MINMAX(SDNode *N,

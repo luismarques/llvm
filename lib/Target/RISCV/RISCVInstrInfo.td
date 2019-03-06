@@ -21,10 +21,16 @@ def SDT_CallSeqEnd   : SDCallSeqEnd<[SDTCisVT<0, i32>,
                                      SDTCisVT<1, i32>]>;
 
 // Target-dependent type requirements.
-def SDT_RISCVCall     : SDTypeProfile<0, -1, [SDTCisVT<0, XLenVT>]>;
-def SDT_RISCVSelectCC : SDTypeProfile<1, 5, [SDTCisSameAs<1, 2>,
-                                             SDTCisSameAs<0, 4>,
-                                             SDTCisSameAs<4, 5>]>;
+def SDT_RISCVCall          : SDTypeProfile<0, -1, [SDTCisVT<0, XLenVT>]>;
+def SDT_RISCVSelectCC      : SDTypeProfile<1, 5, [SDTCisSameAs<1, 2>,
+                                                  SDTCisSameAs<0, 4>,
+                                                  SDTCisSameAs<4, 5>]>;
+def SDT_RISCVSelectCCParts : SDTypeProfile<2, 7, [SDTCisSameAs<0, 1>,
+                                                  SDTCisSameAs<2, 3>,
+                                                  SDTCisSameAs<5, 6>,
+                                                  SDTCisSameAs<7, 8>,
+                                                  SDTCisSameAs<0, 5>,
+                                                  SDTCisSameAs<5, 7>]>;
 
 // Target-independent nodes, but with target-specific formats.
 def callseq_start : SDNode<"ISD::CALLSEQ_START", SDT_CallSeqStart,
@@ -46,6 +52,8 @@ def riscv_mret_flag : SDNode<"RISCVISD::MRET_FLAG", SDTNone,
                              [SDNPHasChain, SDNPOptInGlue]>;
 def riscv_selectcc  : SDNode<"RISCVISD::SELECT_CC", SDT_RISCVSelectCC,
                              [SDNPInGlue]>;
+def riscv_selectcc_parts : SDNode<"RISCVISD::SELECT_CC_PARTS",
+                                  SDT_RISCVSelectCCParts, [SDNPInGlue]>;
 def riscv_tail      : SDNode<"RISCVISD::TAIL", SDT_RISCVCall,
                              [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
                               SDNPVariadic]>;
@@ -789,6 +797,14 @@ class SelectCC_rrirr<RegisterClass valty, RegisterClass cmpty>
               (XLenVT imm:$imm), valty:$truev, valty:$falsev))]>;
 
 def Select_GPR_Using_CC_GPR : SelectCC_rrirr<GPR, GPR>;
+
+let usesCustomInserter = 1, hasSideEffects = 0, mayStore = 0, mayLoad = 0 in
+def Select_GPR_Parts_using_CC_GPR
+    : Pseudo<(outs GPR:$dstlo, GPR:$dsthi),
+             (ins GPR:$lhs, GPR:$rhs, ixlenimm:$imm,
+              GPR:$truevlo, GPR:$truevhi, GPR:$falsevlo, GPR:$falsevhi),
+             [(set GPR:$dstlo, GPR:$dsthi, (riscv_selectcc_parts GPR:$lhs, GPR:$rhs,
+              (XLenVT imm:$imm), GPR:$truevlo, GPR:$truevhi, GPR:$falsevlo, GPR:$falsevhi))]>;
 
 /// Branches and jumps
 

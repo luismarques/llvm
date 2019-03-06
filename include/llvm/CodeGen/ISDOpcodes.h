@@ -418,6 +418,11 @@ namespace ISD {
     /// i1 then the high bits must conform to getBooleanContents.
     SELECT,
 
+    /// Like SELECT, but with TRUEVAL and FALSEVAL expanded. Especially useful
+    /// for targets that don't have a conditional move instruction.
+    /// [Lo,Hi] = SELECT_PARTS(Cond, TrueLo, TrueHi, FalseLo, FalseHi)
+    SELECT_PARTS,
+
     /// Select with a vector condition (op #0) and two vector operands (ops #1
     /// and #2), returning a vector result.  All vectors have the same length.
     /// Much like the scalar select and setcc, each bit in the condition selects

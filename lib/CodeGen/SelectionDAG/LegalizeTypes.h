@@ -398,6 +398,7 @@ private:
 
   // Integer Result Expansion.
   void ExpandIntegerResult(SDNode *N, unsigned ResNo);
+  void ExpandIntRes_SELECT            (SDNode *N, SDValue &Lo, SDValue &Hi);
   void ExpandIntRes_ANY_EXTEND        (SDNode *N, SDValue &Lo, SDValue &Hi);
   void ExpandIntRes_AssertSext        (SDNode *N, SDValue &Lo, SDValue &Hi);
   void ExpandIntRes_AssertZext        (SDNode *N, SDValue &Lo, SDValue &Hi);

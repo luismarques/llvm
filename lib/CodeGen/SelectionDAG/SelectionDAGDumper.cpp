@@ -270,6 +270,7 @@ std::string SDNode::getOperationName(const SelectionDAG *G) const {
   case ISD::SETCC:                      return "setcc";
   case ISD::SETCCCARRY:                 return "setcccarry";
   case ISD::SELECT:                     return "select";
+  case ISD::SELECT_PARTS:               return "select_parts";
   case ISD::VSELECT:                    return "vselect";
   case ISD::SELECT_CC:                  return "select_cc";
   case ISD::INSERT_VECTOR_ELT:          return "insert_vector_elt";
