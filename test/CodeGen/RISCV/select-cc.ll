@@ -98,3 +98,219 @@ define i32 @foo(i32 %a, i32 *%b) {
 
   ret i32 %val20
 }
+
+; Check that selects of wide values don't introduce unnecessary control flow.
+
+define i64 @cmovcc64(i32 signext %a, i64 %b, i64 %c) nounwind {
+; RV32I-LABEL: cmovcc64:
+; RV32I:       # %bb.0: # %entry
+; RV32I-NEXT:    addi a5, zero, 123
+; RV32I-NEXT:    beq a0, a5, .LBB1_2
+; RV32I-NEXT:  # %bb.1: # %entry
+; RV32I-NEXT:    mv a2, a4
+; RV32I-NEXT:    mv a1, a3
+; RV32I-NEXT:  .LBB1_2: # %entry
+; RV32I-NEXT:    mv a0, a1
+; RV32I-NEXT:    mv a1, a2
+; RV32I-NEXT:    ret
+; RV64I-LABEL: cmovcc64:
+; RV64I:       # %bb.0: # %entry
+; RV64I-NEXT:    addi a3, zero, 123
+; RV64I-NEXT:    beq a0, a3, .LBB0_2
+; RV64I-NEXT:  # %bb.1: # %entry
+; RV64I-NEXT:    mv a1, a2
+; RV64I-NEXT:  .LBB0_2: # %entry
+; RV64I-NEXT:    mv a0, a1
+; RV64I-NEXT:    ret
+entry:
+  %cmp = icmp eq i32 %a, 123
+  %cond = select i1 %cmp, i64 %b, i64 %c
+  ret i64 %cond
+}
+
+define i128 @cmovcc128(i64 signext %a, i128 %b, i128 %c) nounwind {
+; RV32I-LABEL: cmovcc128:
+; RV32I:       # %bb.0: # %entry
+; RV32I-NEXT:    xori a1, a1, 123
+; RV32I-NEXT:    or a2, a1, a2
+; RV32I-NEXT:    bnez a2, .LBB2_2
+; RV32I-NEXT:  # %bb.1:
+; RV32I-NEXT:    addi a6, a3, 4
+; RV32I-NEXT:    j .LBB2_3
+; RV32I-NEXT:  .LBB2_2: # %entry
+; RV32I-NEXT:    addi a6, a4, 4
+; RV32I-NEXT:  .LBB2_3: # %entry
+; RV32I-NEXT:    bnez a2, .LBB2_5
+; RV32I-NEXT:  # %bb.4:
+; RV32I-NEXT:    addi a5, a3, 8
+; RV32I-NEXT:    j .LBB2_6
+; RV32I-NEXT:  .LBB2_5: # %entry
+; RV32I-NEXT:    addi a5, a4, 8
+; RV32I-NEXT:  .LBB2_6: # %entry
+; RV32I-NEXT:    mv a1, a3
+; RV32I-NEXT:    beqz a2, .LBB2_8
+; RV32I-NEXT:  # %bb.7: # %entry
+; RV32I-NEXT:    mv a1, a4
+; RV32I-NEXT:  .LBB2_8: # %entry
+; RV32I-NEXT:    bnez a2, .LBB2_10
+; RV32I-NEXT:  # %bb.9:
+; RV32I-NEXT:    addi a2, a3, 12
+; RV32I-NEXT:    j .LBB2_11
+; RV32I-NEXT:  .LBB2_10: # %entry
+; RV32I-NEXT:    addi a2, a4, 12
+; RV32I-NEXT:  .LBB2_11: # %entry
+; RV32I-NEXT:    lw a2, 0(a2)
+; RV32I-NEXT:    sw a2, 12(a0)
+; RV32I-NEXT:    lw a2, 0(a5)
+; RV32I-NEXT:    sw a2, 8(a0)
+; RV32I-NEXT:    lw a2, 0(a6)
+; RV32I-NEXT:    sw a2, 4(a0)
+; RV32I-NEXT:    lw a1, 0(a1)
+; RV32I-NEXT:    sw a1, 0(a0)
+; RV32I-NEXT:    ret
+; RV64I-LABEL: cmovcc128:
+; RV64I:       # %bb.0: # %entry
+; RV64I-NEXT:    addi a5, zero, 123
+; RV64I-NEXT:    beq a0, a5, .LBB1_2
+; RV64I-NEXT:  # %bb.1: # %entry
+; RV64I-NEXT:    mv a2, a4
+; RV64I-NEXT:    mv a1, a3
+; RV64I-NEXT:  .LBB1_2: # %entry
+; RV64I-NEXT:    mv a0, a1
+; RV64I-NEXT:    mv a1, a2
+; RV64I-NEXT:    ret
+entry:
+  %cmp = icmp eq i64 %a, 123
+  %cond = select i1 %cmp, i128 %b, i128 %c
+  ret i128 %cond
+}
+
+define i64 @cmov64(i1 %a, i64 %b, i64 %c) nounwind {
+; RV32I-LABEL: cmov64:
+; RV32I:       # %bb.0: # %entry
+; RV32I-NEXT:    andi a0, a0, 1
+; RV32I-NEXT:    bnez a0, .LBB3_2
+; RV32I-NEXT:  # %bb.1: # %entry
+; RV32I-NEXT:    mv a2, a4
+; RV32I-NEXT:    mv a1, a3
+; RV32I-NEXT:  .LBB3_2: # %entry
+; RV32I-NEXT:    mv a0, a1
+; RV32I-NEXT:    mv a1, a2
+; RV32I-NEXT:    ret
+; RV64I-LABEL: cmov64:
+; RV64I:       # %bb.0: # %entry
+; RV64I-NEXT:    andi a0, a0, 1
+; RV64I-NEXT:    bnez a0, .LBB2_2
+; RV64I-NEXT:  # %bb.1: # %entry
+; RV64I-NEXT:    mv a1, a2
+; RV64I-NEXT:  .LBB2_2: # %entry
+; RV64I-NEXT:    mv a0, a1
+; RV64I-NEXT:    ret
+entry:
+  %cond = select i1 %a, i64 %b, i64 %c
+  ret i64 %cond
+}
+
+define i128 @cmov128(i1 %a, i128 %b, i128 %c) nounwind {
+; RV32I-LABEL: cmov128:
+; RV32I:       # %bb.0: # %entry
+; RV32I-NEXT:    andi a4, a1, 1
+; RV32I-NEXT:    beqz a4, .LBB4_2
+; RV32I-NEXT:  # %bb.1:
+; RV32I-NEXT:    addi a6, a2, 4
+; RV32I-NEXT:    j .LBB4_3
+; RV32I-NEXT:  .LBB4_2: # %entry
+; RV32I-NEXT:    addi a6, a3, 4
+; RV32I-NEXT:  .LBB4_3: # %entry
+; RV32I-NEXT:    beqz a4, .LBB4_5
+; RV32I-NEXT:  # %bb.4:
+; RV32I-NEXT:    addi a5, a2, 8
+; RV32I-NEXT:    j .LBB4_6
+; RV32I-NEXT:  .LBB4_5: # %entry
+; RV32I-NEXT:    addi a5, a3, 8
+; RV32I-NEXT:  .LBB4_6: # %entry
+; RV32I-NEXT:    mv a1, a2
+; RV32I-NEXT:    bnez a4, .LBB4_8
+; RV32I-NEXT:  # %bb.7: # %entry
+; RV32I-NEXT:    mv a1, a3
+; RV32I-NEXT:  .LBB4_8: # %entry
+; RV32I-NEXT:    beqz a4, .LBB4_10
+; RV32I-NEXT:  # %bb.9:
+; RV32I-NEXT:    addi a2, a2, 12
+; RV32I-NEXT:    j .LBB4_11
+; RV32I-NEXT:  .LBB4_10: # %entry
+; RV32I-NEXT:    addi a2, a3, 12
+; RV32I-NEXT:  .LBB4_11: # %entry
+; RV32I-NEXT:    lw a2, 0(a2)
+; RV32I-NEXT:    sw a2, 12(a0)
+; RV32I-NEXT:    lw a2, 0(a5)
+; RV32I-NEXT:    sw a2, 8(a0)
+; RV32I-NEXT:    lw a2, 0(a6)
+; RV32I-NEXT:    sw a2, 4(a0)
+; RV32I-NEXT:    lw a1, 0(a1)
+; RV32I-NEXT:    sw a1, 0(a0)
+; RV32I-NEXT:    ret
+; RV64I-LABEL: cmov128:
+; RV64I:       # %bb.0: # %entry
+; RV64I-NEXT:    bnez a0, .LBB3_2
+; RV64I-NEXT:  # %bb.1: # %entry
+; RV64I-NEXT:    mv a2, a4
+; RV64I-NEXT:    mv a1, a3
+; RV64I-NEXT:  .LBB3_2: # %entry
+; RV64I-NEXT:    mv a0, a1
+; RV64I-NEXT:    mv a1, a2
+; RV64I-NEXT:    ret
+entry:
+  %cond = select i1 %a, i128 %b, i128 %c
+  ret i128 %cond
+}
+
+define float @cmovfloat(i1 %a, float %b, float %c, float %d, float %e) nounwind {
+; RV32I-LABEL: cmovfloat:
+; RV32I:       # %bb.0: # %entry
+; RV32I-NEXT:    addi sp, sp, -16
+; RV32I-NEXT:    sw ra, 12(sp)
+; RV32I-NEXT:    andi a0, a0, 1
+; RV32I-NEXT:    bnez a0, .LBB5_2
+; RV32I-NEXT:  # %bb.1: # %entry
+; RV32I-NEXT:    mv a3, a4
+; RV32I-NEXT:    mv a1, a2
+; RV32I-NEXT:  .LBB5_2: # %entry
+; RV32I-NEXT:    mv a0, a1
+; RV32I-NEXT:    mv a1, a3
+; RV32I-NEXT:    call __addsf3
+; RV32I-NEXT:    lw ra, 12(sp)
+; RV32I-NEXT:    addi sp, sp, 16
+; RV32I-NEXT:    ret
+entry:
+  %cond1 = select i1 %a, float %b, float %c
+  %cond2 = select i1 %a, float %d, float %e
+  %ret = fadd float %cond1, %cond2
+  ret float %ret
+}
+
+; Check that selects with dependencies on previous ones aren't incorrectly
+; optimized.
+
+define i32 @cmovccdep(i32 signext %a, i32 %b, i32 %c, i32 %d) nounwind {
+; RV32I-LABEL: cmovccdep:
+; RV32I:       # %bb.0: # %entry
+; RV32I-NEXT:    addi a4, zero, 123
+; RV32I-NEXT:    beq a0, a4, .LBB6_2
+; RV32I-NEXT:  # %bb.1: # %entry
+; RV32I-NEXT:    mv a1, a2
+; RV32I-NEXT:  .LBB6_2: # %entry
+; RV32I-NEXT:    mv a2, a1
+; RV32I-NEXT:    beq a0, a4, .LBB6_4
+; RV32I-NEXT:  # %bb.3: # %entry
+; RV32I-NEXT:    mv a2, a3
+; RV32I-NEXT:  .LBB6_4: # %entry
+; RV32I-NEXT:    add a0, a1, a2
+; RV32I-NEXT:    ret
+entry:
+  %cmp = icmp eq i32 %a, 123
+  %cond1 = select i1 %cmp, i32 %b, i32 %c
+  %cond2 = select i1 %cmp, i32 %cond1, i32 %d
+  %ret = add i32 %cond1, %cond2
+  ret i32 %ret
+}

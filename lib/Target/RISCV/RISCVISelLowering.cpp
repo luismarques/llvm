@@ -17,6 +17,7 @@
 #include "RISCVRegisterInfo.h"
 #include "RISCVSubtarget.h"
 #include "RISCVTargetMachine.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -781,23 +782,21 @@ static MachineBasicBlock *emitBuildPairF64Pseudo(MachineInstr &MI,
   return BB;
 }
 
-static MachineBasicBlock *emitSelectPseudo(MachineInstr &MI,
-                                           MachineBasicBlock *BB) {
+static bool isSelectPseudo(MachineInstr &MI) {
   switch (MI.getOpcode()) {
   default:
-    llvm_unreachable("Unexpected instr type to insert");
+    return false;
   case RISCV::Select_GPR_Using_CC_GPR:
   case RISCV::Select_FPR32_Using_CC_GPR:
   case RISCV::Select_FPR64_Using_CC_GPR:
-    break;
-  case RISCV::BuildPairF64Pseudo:
-    return emitBuildPairF64Pseudo(MI, BB);
-  case RISCV::SplitF64Pseudo:
-    return emitSplitF64Pseudo(MI, BB);
+    return true;
   }
+}
 
-  // To "insert" a SELECT instruction, we actually have to insert the triangle
-  // control-flow pattern.  The incoming instruction knows the destination vreg
+static MachineBasicBlock *emitSelectPseudo(MachineInstr &MI,
+                                           MachineBasicBlock *BB) {
+  // To "insert" Select_* instructions, we actually have to insert the triangle
+  // control-flow pattern.  The incoming instructions know the destination vreg
   // to set, the condition code register to branch on, the true/false values to
   // select between, and the condcode to use to select the appropriate branch.
   //
@@ -807,6 +806,39 @@ static MachineBasicBlock *emitSelectPseudo(MachineInstr &MI,
   //     |  IfFalseMBB
   //     | /
   //    TailMBB
+  //
+  // When we find a sequence of contiguous selects we attempt to optimize their
+  // emission, by sharing the control flow. Currently we only handle cases
+  // where:
+  //   - The selects are only separated by debug instructions;
+  //   - They have the exact same condition (same LHS, RHS and CC);
+  //   - Their TrueV and FalseV are not the result of previous selects in the
+  //     sequence.
+  // These conditions can be relaxed. See the X86 target for more information.
+
+  auto NextMBBI = MachineBasicBlock::iterator(MI);
+
+  unsigned LHS = MI.getOperand(1).getReg();
+  unsigned RHS = MI.getOperand(2).getReg();
+  auto CC = static_cast<ISD::CondCode>(MI.getOperand(3).getImm());
+
+  MachineInstr *LastSelectPseudo;
+  SmallSet<unsigned, 4> SelectedRegs;
+
+  // See if we have a string of selects with the same condition. If so, we
+  // can avoid doing multiple branches. Skip over interleaved debug insts.
+  do {
+    LastSelectPseudo = &*NextMBBI;
+    SelectedRegs.insert(NextMBBI->getOperand(0).getReg());
+    ++NextMBBI;
+    NextMBBI = skipDebugInstructionsForward(NextMBBI, BB->end());
+  } while (NextMBBI != BB->end() && isSelectPseudo(*NextMBBI) &&
+           NextMBBI->getOperand(1).getReg() == LHS &&
+           NextMBBI->getOperand(2).getReg() == RHS &&
+           NextMBBI->getOperand(3).getImm() == CC &&
+           SelectedRegs.count(NextMBBI->getOperand(4).getReg()) == 0 &&
+           SelectedRegs.count(NextMBBI->getOperand(5).getReg()) == 0);
+
   const TargetInstrInfo &TII = *BB->getParent()->getSubtarget().getInstrInfo();
   const BasicBlock *LLVM_BB = BB->getBasicBlock();
   DebugLoc DL = MI.getDebugLoc();
@@ -819,20 +851,30 @@ static MachineBasicBlock *emitSelectPseudo(MachineInstr &MI,
 
   F->insert(I, IfFalseMBB);
   F->insert(I, TailMBB);
+
+  // Transfer any debug instructions inside the sequence of select
+  // pseudo-instructions to TailMBB.
+  auto DbgEnd = MachineBasicBlock::iterator(LastSelectPseudo);
+  auto DbgIt = MachineBasicBlock::iterator(MI);
+  while (DbgIt != DbgEnd) {
+    auto Next = std::next(DbgIt);
+    if (DbgIt->isDebugInstr())
+      TailMBB->push_back(DbgIt->removeFromParent());
+    DbgIt = Next;
+  }
+
   // Move all remaining instructions to TailMBB.
   TailMBB->splice(TailMBB->begin(), HeadMBB,
-                  std::next(MachineBasicBlock::iterator(MI)), HeadMBB->end());
+                  std::next(MachineBasicBlock::iterator(LastSelectPseudo)),
+                  HeadMBB->end());
   // Update machine-CFG edges by transferring all successors of the current
-  // block to the new block which will contain the Phi node for the select.
+  // block to the new block which will contain the Phi nodes for the selects.
   TailMBB->transferSuccessorsAndUpdatePHIs(HeadMBB);
   // Set the successors for HeadMBB.
   HeadMBB->addSuccessor(IfFalseMBB);
   HeadMBB->addSuccessor(TailMBB);
 
   // Insert appropriate branch.
-  unsigned LHS = MI.getOperand(1).getReg();
-  unsigned RHS = MI.getOperand(2).getReg();
-  auto CC = static_cast<ISD::CondCode>(MI.getOperand(3).getImm());
   unsigned Opcode = getBranchOpcodeForIntCondCode(CC);
 
   BuildMI(HeadMBB, DL, TII.get(Opcode))
@@ -843,15 +885,23 @@ static MachineBasicBlock *emitSelectPseudo(MachineInstr &MI,
   // IfFalseMBB just falls through to TailMBB.
   IfFalseMBB->addSuccessor(TailMBB);
 
-  // %Result = phi [ %TrueValue, HeadMBB ], [ %FalseValue, IfFalseMBB ]
-  BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
-          MI.getOperand(0).getReg())
-      .addReg(MI.getOperand(4).getReg())
-      .addMBB(HeadMBB)
-      .addReg(MI.getOperand(5).getReg())
-      .addMBB(IfFalseMBB);
+  auto SelectItBegin = MachineBasicBlock::iterator(MI);
+  auto SelectItEnd = std::next(MachineBasicBlock::iterator(LastSelectPseudo));
 
-  MI.eraseFromParent(); // The pseudo instruction is gone now.
+  // Create PHIs for all of the select pseudo-instructions that were inserted.
+  for (auto SelectIt = SelectItBegin; SelectIt != SelectItEnd; ++SelectIt) {
+    // %Result = phi [ %TrueValue, HeadMBB ], [ %FalseValue, IfFalseMBB ]
+    BuildMI(*TailMBB, TailMBB->begin(), DL, TII.get(RISCV::PHI),
+            SelectIt->getOperand(0).getReg())
+        .addReg(SelectIt->getOperand(4).getReg())
+        .addMBB(HeadMBB)
+        .addReg(SelectIt->getOperand(5).getReg())
+        .addMBB(IfFalseMBB);
+  }
+
+  // Remove the (one or more) select pseudo-instructions that we inserted.
+  BB->erase(SelectItBegin, SelectItEnd);
+
   return TailMBB;
 }
 
