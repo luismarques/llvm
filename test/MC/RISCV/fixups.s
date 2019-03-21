@@ -30,10 +30,10 @@ auipc t1, %pcrel_hi(.LBB0)
 # CHECK-INSTR: auipc t1, 0
 addi t1, t1, %pcrel_lo(1b)
 # CHECK-FIXUP: fixup A - offset: 0, value: %pcrel_lo(.Ltmp0), kind: fixup_riscv_pcrel_lo12_i
-# CHECK-INSTR: addi t1, t1, -16
+# CHECK-INSTR: addi t1, t1, -4
 sw t1, %pcrel_lo(1b)(t1)
 # CHECK-FIXUP: fixup A - offset: 0, value: %pcrel_lo(.Ltmp0), kind: fixup_riscv_pcrel_lo12_s
-# CHECK-INSTR: sw t1, -16(t1)
+# CHECK-INSTR: sw t1, -8(t1)
 
 jal zero, .LBB0
 # CHECK-FIXUP: fixup A - offset: 0, value: .LBB0, kind: fixup_riscv_jal

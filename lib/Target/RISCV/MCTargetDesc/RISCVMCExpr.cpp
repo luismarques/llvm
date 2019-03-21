@@ -79,60 +79,9 @@ const MCFixup *RISCVMCExpr::getPCRelHiFixup() const {
   return nullptr;
 }
 
-bool RISCVMCExpr::evaluatePCRelLo(MCValue &Res, const MCAsmLayout *Layout,
-                                  const MCFixup *Fixup) const {
-  // VK_RISCV_PCREL_LO has to be handled specially.  The MCExpr inside is
-  // actually the location of a auipc instruction with a VK_RISCV_PCREL_HI fixup
-  // pointing to the real target.  We need to generate an MCValue in the form of
-  // (<real target> + <offset from this fixup to the auipc fixup>).  The Fixup
-  // is pcrel relative to the VK_RISCV_PCREL_LO fixup, so we need to add the
-  // offset to the VK_RISCV_PCREL_HI Fixup from VK_RISCV_PCREL_LO to correct.
-  MCValue AUIPCLoc;
-  if (!getSubExpr()->evaluateAsValue(AUIPCLoc, *Layout))
-    return false;
-
-  const MCSymbolRefExpr *AUIPCSRE = AUIPCLoc.getSymA();
-  // Don't try to evaluate %pcrel_hi/%pcrel_lo pairs that cross fragment
-  // boundries.
-  if (!AUIPCSRE ||
-      findAssociatedFragment() != AUIPCSRE->findAssociatedFragment())
-    return false;
-
-  const MCSymbol *AUIPCSymbol = &AUIPCSRE->getSymbol();
-  if (!AUIPCSymbol)
-    return false;
-
-  const MCFixup *TargetFixup = getPCRelHiFixup();
-  if (!TargetFixup)
-    return false;
-
-  if ((unsigned)TargetFixup->getKind() != RISCV::fixup_riscv_pcrel_hi20)
-    return false;
-
-  MCValue Target;
-  if (!TargetFixup->getValue()->evaluateAsValue(Target, *Layout))
-    return false;
-
-  if (!Target.getSymA() || !Target.getSymA()->getSymbol().isInSection())
-    return false;
-
-  if (&Target.getSymA()->getSymbol().getSection() !=
-      findAssociatedFragment()->getParent())
-    return false;
-
-  uint64_t AUIPCOffset = AUIPCSymbol->getOffset();
-
-  Res = MCValue::get(Target.getSymA(), nullptr,
-                     Target.getConstant() + (Fixup->getOffset() - AUIPCOffset));
-  return true;
-}
-
 bool RISCVMCExpr::evaluateAsRelocatableImpl(MCValue &Res,
                                             const MCAsmLayout *Layout,
                                             const MCFixup *Fixup) const {
-  if (Kind == VK_RISCV_PCREL_LO && evaluatePCRelLo(Res, Layout, Fixup))
-    return true;
-
   if (!getSubExpr()->evaluateAsRelocatable(Res, Layout, Fixup))
     return false;
 

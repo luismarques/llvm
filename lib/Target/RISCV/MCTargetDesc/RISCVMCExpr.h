@@ -39,9 +39,6 @@ private:
 
   int64_t evaluateAsInt64(int64_t Value) const;
 
-  bool evaluatePCRelLo(MCValue &Res, const MCAsmLayout *Layout,
-                       const MCFixup *Fixup) const;
-
   explicit RISCVMCExpr(const MCExpr *Expr, VariantKind Kind)
       : Expr(Expr), Kind(Kind) {}
 
