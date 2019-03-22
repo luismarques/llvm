@@ -329,6 +329,10 @@ def : Pat<(setuo FPR32:$rs1, FPR32:$rs2),
                       (FEQ_S FPR32:$rs2, FPR32:$rs2)),
                  1)>;
 
+def : Pat<(xor (setuo FPR32:$rs1, FPR32:$rs2), 1),
+          (AND (FEQ_S FPR32:$rs1, FPR32:$rs1),
+               (FEQ_S FPR32:$rs2, FPR32:$rs2))>;
+
 def Select_FPR32_Using_CC_GPR : SelectCC_rrirr<FPR32, GPR>;
 
 /// Loads
