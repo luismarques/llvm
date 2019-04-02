@@ -406,6 +406,10 @@ namespace {
     SDValue visitFMULForFMADistributiveCombine(SDNode *N);
 
     SDValue XformToShuffleWithZero(SDNode *N);
+    bool reassociationCanBreakAddressingModePattern(unsigned Opc,
+                                                    const SDLoc &DL, SDValue N0,
+                                                    SDValue N1,
+                                                    SDNodeFlags Flags);
     SDValue ReassociateOps(unsigned Opc, const SDLoc &DL, SDValue N0,
                            SDValue N1, SDNodeFlags Flags);
 
@@ -944,6 +948,46 @@ static bool isAnyConstantBuildVector(SDValue V, bool NoOpaques = false) {
     return false;
   return isConstantOrConstantVector(V, NoOpaques) ||
          ISD::isBuildVectorOfConstantFPSDNodes(V.getNode());
+}
+
+bool DAGCombiner::reassociationCanBreakAddressingModePattern(
+    unsigned Opc, const SDLoc &DL, SDValue N0, SDValue N1, SDNodeFlags Flags) {
+  if (Opc != ISD::ADD)
+    return false;
+
+  if (Flags.hasVectorReduction())
+    return false;
+
+  if (N0.getOpcode() != Opc || N0->getFlags().hasVectorReduction())
+    return false;
+
+  ConstantSDNode *C1 = dyn_cast<ConstantSDNode>(N0.getOperand(1));
+  ConstantSDNode *C2 = dyn_cast<ConstantSDNode>(N1);
+  if (!C1 || !C2)
+    return false;
+
+  const APInt &C1APIntVal = C1->getAPIntValue();
+  const APInt &C2APIntVal = C2->getAPIntValue();
+
+  if (C1APIntVal.getBitWidth() > 64 || C2APIntVal.getBitWidth() > 64)
+    return false;
+
+  TargetLoweringBase::AddrMode AM;
+  AM.HasBaseReg = true;
+  AM.BaseOffs = C2APIntVal.getSExtValue();
+
+  EVT VT = N0.getValueType();
+  Type *AccessTy = VT.getTypeForEVT(*DAG.getContext());
+
+  // If it already is not a legal addressing mode then we break nothing
+  if (!TLI.isLegalAddressingMode(DAG.getDataLayout(), AM, AccessTy, 0))
+    return false;
+
+  const APInt CombinedValue = C1APIntVal + C2APIntVal;
+  if (CombinedValue.getBitWidth() > 64)
+    return false;
+  AM.BaseOffs = CombinedValue.getSExtValue();
+  return !TLI.isLegalAddressingMode(DAG.getDataLayout(), AM, AccessTy, 0);
 }
 
 SDValue DAGCombiner::ReassociateOps(unsigned Opc, const SDLoc &DL, SDValue N0,
@@ -2143,8 +2187,11 @@ SDValue DAGCombiner::visitADD(SDNode *N) {
     return NewSel;
 
   // reassociate add
-  if (SDValue RADD = ReassociateOps(ISD::ADD, DL, N0, N1, N->getFlags()))
-    return RADD;
+  if (!reassociationCanBreakAddressingModePattern(ISD::ADD, DL, N0, N1,
+                                                  N->getFlags())) {
+    if (SDValue RADD = ReassociateOps(ISD::ADD, DL, N0, N1, N->getFlags()))
+      return RADD;
+  }
 
   // fold ((0-A) + B) -> B-A
   if (N0.getOpcode() == ISD::SUB && isNullOrNullSplat(N0.getOperand(0)))
