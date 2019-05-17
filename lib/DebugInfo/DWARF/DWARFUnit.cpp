@@ -241,7 +241,7 @@ bool DWARFUnitHeader::extract(DWARFContext &Context,
   IndexEntry = Entry;
   if (!IndexEntry && Index)
     IndexEntry = Index->getFromOffset(*offset_ptr);
-  Length = debug_info.getU32(offset_ptr);
+  Length = debug_info.getRelocatedValue(4, offset_ptr);
   // FIXME: Support DWARF64.
   unsigned SizeOfLength = 4;
   FormParams.Format = DWARF32;
