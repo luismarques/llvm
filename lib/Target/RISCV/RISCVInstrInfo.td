@@ -69,6 +69,12 @@ class ImmAsmOperand<string prefix, int width, string suffix> : AsmOperandClass {
   let DiagnosticType = !strconcat("Invalid", Name);
 }
 
+def ZeroImmAsmOperand : AsmOperandClass {
+  let Name = "ZeroImm";
+  let RenderMethod = "addImmOperands";
+  let DiagnosticType = !strconcat("Invalid", Name);
+}
+
 class SImmAsmOperand<int width, string suffix = "">
     : ImmAsmOperand<"S", width, suffix> {
 }
